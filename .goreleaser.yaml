@@ -1,0 +1,119 @@
+version: 2
+
+project_name: rift
+
+before:
+  hooks:
+    - rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+builds:
+  - id: rift
+    builder: rust
+    binary: rift
+    command: build
+    env:
+      # Your global git config rewrites https://github.com/ to SSH, and rift has
+      # git dependencies. goreleaser sanitizes the build env, so forward the
+      # agent socket (empty and harmless on a machine without one).
+      - SSH_AUTH_SOCK={{ index .Env "SSH_AUTH_SOCK" }}
+      - CARGO_NET_GIT_FETCH_WITH_CLI=true
+    flags:
+      - --release
+      - --locked
+      - --package=rift-wm
+      - --bin
+      - rift
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+
+  - id: rift-cli
+    builder: rust
+    binary: rift-cli
+    command: build
+    env:
+      # Your global git config rewrites https://github.com/ to SSH, and rift has
+      # git dependencies. goreleaser sanitizes the build env, so forward the
+      # agent socket (empty and harmless on a machine without one).
+      - SSH_AUTH_SOCK={{ index .Env "SSH_AUTH_SOCK" }}
+      - CARGO_NET_GIT_FETCH_WITH_CLI=true
+    flags:
+      - --release
+      - --locked
+      - --package=rift-wm
+      - --bin
+      - rift-cli
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+
+# One tarball per architecture (same layout clipctl ships), each containing
+# both binaries. The generated formula picks between them with on_intel/on_arm.
+archives:
+  - id: rift
+    ids:
+      - rift
+      - rift-cli
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - rift.default.toml
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  # The -nicks.N suffix is semver prerelease syntax, but these are normal
+  # releases of the fork -- don't let goreleaser auto-flag them as prereleases.
+  prerelease: false
+  # scripts/release.sh sets these; the conditional keeps a bare `goreleaser
+  # release` working without them.
+  footer: |
+    ---
+    {{ with index .Env "RIFT_UPSTREAM_BASE" }}Fork of [acsandmann/rift](https://github.com/acsandmann/rift), based on upstream **{{ . }}** (`{{ index $.Env "RIFT_UPSTREAM_COMMIT" }}`).
+    {{ end }}
+    Install with `brew install nicks/tap/rift`.
+
+brews:
+  - name: rift
+    ids: [rift]
+    directory: Formula
+    repository:
+      owner: nicks
+      name: homebrew-tap
+      branch: main
+    homepage: "https://github.com/nicks/rift"
+    description: "Tiling window manager for macOS (nicks fork of acsandmann/rift)"
+    license: "Apache-2.0"
+    conflicts:
+      - acsandmann/tap/rift
+    install: |
+      bin.install "rift"
+      bin.install "rift-cli"
+      pkgshare.install "rift.default.toml"
+
+      # Ad-hoc sign: rift talks to private SkyLight APIs and macOS is unhappy
+      # about an unsigned binary holding Accessibility permissions.
+      system "codesign", "--force", "-s", "-", "#{bin}/rift"
+      system "codesign", "--force", "-s", "-", "#{bin}/rift-cli"
+    service: |
+      run [opt_bin/"rift"]
+      keep_alive true
+      process_type :interactive
+      environment_variables PATH: std_service_path_env, LANG: "en_US.UTF-8"
+      log_path var/"log/rift.log"
+      error_log_path var/"log/rift.err.log"
+    caveats: |
+      rift requires Accessibility permissions to control windows.
+      Grant them in System Settings > Privacy & Security > Accessibility.
+
+      To install the example configuration:
+        mkdir -p ~/.config/rift
+        cp #{HOMEBREW_PREFIX}/share/rift/rift.default.toml ~/.config/rift/config.toml
+
+      To run rift in the background:
+        brew services start nicks/tap/rift
+    test: |
+      system bin/"rift-cli", "--help"
