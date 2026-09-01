@@ -94,6 +94,7 @@ fi
 
 jj git push --remote origin --tag "$tag"
 
+GITHUB_TOKEN=$(gh auth token) \
 RIFT_UPSTREAM_BASE="$base_tag" \
 RIFT_UPSTREAM_COMMIT="$base_commit" \
   goreleaser release --clean
