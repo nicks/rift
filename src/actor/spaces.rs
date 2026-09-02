@@ -497,12 +497,17 @@ impl SpacesActor {
         }
     }
 
+    // Sleep and session inactivity end only on wake or unlock; churn clears itself.
+    fn lifecycle_quarantined(&self) -> bool {
+        self.state.sleeping || self.state.session_inactive
+    }
+
     fn should_buffer_topology_updates(&self) -> bool {
-        self.state.sleeping || self.state.session_inactive || self.state.display_churn_active
+        self.lifecycle_quarantined() || self.state.display_churn_active
     }
 
     fn should_quarantine_window_space_event(&self) -> bool {
-        self.state.sleeping || self.state.session_inactive || self.state.display_churn_active
+        self.lifecycle_quarantined() || self.state.display_churn_active
     }
 
     fn collect_state(&mut self) -> Option<(Vec<ScreenInfo>, CoordinateConverter)> {
@@ -1306,6 +1311,12 @@ impl SpacesActor {
 
     fn attempt_finish_display_churn(&mut self, expected_epoch: u64, attempt: u8) {
         if expected_epoch != self.state.display_churn_epoch || !self.state.display_churn_active {
+            return;
+        }
+
+        // Under a lifecycle quarantine a repeated sample looks stable without being
+        // authoritative. Wake and unlock re-arm this check.
+        if self.lifecycle_quarantined() {
             return;
         }
 
