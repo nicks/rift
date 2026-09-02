@@ -71,11 +71,15 @@ enum QueryCommands {
     Workspaces {
         #[arg(long)]
         space_id: Option<u64>,
+        #[command(flatten)]
+        display: QueryDisplayArg,
     },
-    /// List windows (optionally filtered by space)
+    /// List windows of the active workspace, in layout order
     Windows {
         #[arg(long)]
         space_id: Option<u64>,
+        #[command(flatten)]
+        display: QueryDisplayArg,
     },
     /// List connected displays
     Displays,
@@ -101,6 +105,17 @@ enum QueryCommands {
     },
     /// Get performance metrics
     Metrics,
+}
+
+/// Selects the display whose current space a query answers for.
+///
+/// Ignored when `--space-id` is given, which already names a space.
+#[derive(Args, Clone, Debug)]
+struct QueryDisplayArg {
+    /// Display to query: a direction (left, right, up, down), a 0-based index in
+    /// left-to-right order, or a UUID from `rift-cli query displays`
+    #[arg(long = "display", value_name = "DIRECTION|INDEX|UUID", value_parser = parse_display_selector)]
+    display: Option<DisplaySelector>,
 }
 
 #[derive(Subcommand)]
@@ -574,8 +589,14 @@ fn build_request(command: Commands) -> Result<RiftRequest, String> {
 
 fn build_query_request(query: QueryCommands) -> Result<RiftRequest, String> {
     match query {
-        QueryCommands::Workspaces { space_id } => Ok(RiftRequest::GetWorkspaces { space_id }),
-        QueryCommands::Windows { space_id } => Ok(RiftRequest::GetWindows { space_id }),
+        QueryCommands::Workspaces { space_id, display } => Ok(RiftRequest::GetWorkspaces {
+            space_id,
+            display: display.display,
+        }),
+        QueryCommands::Windows { space_id, display } => Ok(RiftRequest::GetWindows {
+            space_id,
+            display: display.display,
+        }),
         QueryCommands::Displays => Ok(RiftRequest::GetDisplays),
         QueryCommands::Window { window_id } => {
             let window_id = protocol_window_id(&parse_window_id(&window_id)?)?;
@@ -1103,6 +1124,25 @@ fn build_display_selector(
     }
 }
 
+/// Parse the single-argument form of a display selector.
+///
+/// The three value spaces cannot collide: direction names are not numbers, and
+/// display UUIDs are neither. This mirrors the untagged wire representation of
+/// `DisplaySelector`, so the flag value is what actually travels over IPC.
+fn parse_display_selector(value: &str) -> Result<DisplaySelector, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("display selector must not be empty".to_string());
+    }
+    if let Ok(direction) = parse_focus_direction(value) {
+        return Ok(DisplaySelector::Direction(direction));
+    }
+    if let Ok(index) = value.parse::<usize>() {
+        return Ok(DisplaySelector::Index(index));
+    }
+    Ok(DisplaySelector::Uuid(value.to_string()))
+}
+
 fn parse_focus_direction(value: &str) -> Result<layout::Direction, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "left" => Ok(layout::Direction::Left),
@@ -1164,6 +1204,36 @@ mod tests {
             serde_json::json!({
                 "execute_command": { "command": { "layout": "next_window" } }
             })
+        );
+    }
+
+    #[test]
+    fn display_selector_accepts_direction_index_and_uuid_in_one_flag() {
+        assert_eq!(
+            parse_display_selector("left").unwrap(),
+            DisplaySelector::Direction(layout::Direction::Left)
+        );
+        assert_eq!(parse_display_selector(" 2 ").unwrap(), DisplaySelector::Index(2));
+        assert_eq!(
+            parse_display_selector("D0188458-D052-B127-39E2-0376607D71F2").unwrap(),
+            DisplaySelector::Uuid("D0188458-D052-B127-39E2-0376607D71F2".to_string())
+        );
+        assert!(parse_display_selector("  ").is_err());
+    }
+
+    #[test]
+    fn window_query_sends_the_display_selector_as_a_bare_scalar() {
+        let request = build_query_request(QueryCommands::Windows {
+            space_id: None,
+            display: QueryDisplayArg {
+                display: Some(parse_display_selector("1").unwrap()),
+            },
+        })
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({ "get_windows": { "space_id": null, "display": 1 } })
         );
     }
 

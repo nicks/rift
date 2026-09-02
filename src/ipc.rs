@@ -209,15 +209,19 @@ impl IpcRequestHandler {
 
 fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest) -> Vec<u8> {
     match request {
-        RiftRequest::GetWorkspaces { space_id } => {
-            let workspaces =
-                reactor.query_workspaces(space_id.map(crate::sys::screen::SpaceId::new));
-            encode_success(
-                workspaces
-                    .into_iter()
-                    .map(rift_protocol::WorkspaceData::from)
-                    .collect::<Vec<_>>(),
-            )
+        RiftRequest::GetWorkspaces { space_id, display } => {
+            match resolve_query_space(reactor, space_id, display.as_ref()) {
+                Ok(space) => {
+                    let workspaces = reactor.query_workspaces(space);
+                    encode_success(
+                        workspaces
+                            .into_iter()
+                            .map(rift_protocol::WorkspaceData::from)
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                Err(error) => error,
+            }
         }
 
         RiftRequest::GetDisplays => {
@@ -227,11 +231,19 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             )
         }
 
-        RiftRequest::GetWindows { space_id } => {
-            let windows = reactor.query_windows(space_id.map(crate::sys::screen::SpaceId::new));
-            encode_success(
-                windows.into_iter().map(rift_protocol::WindowData::from).collect::<Vec<_>>(),
-            )
+        RiftRequest::GetWindows { space_id, display } => {
+            match resolve_query_space(reactor, space_id, display.as_ref()) {
+                Ok(space) => {
+                    let windows = reactor.query_windows(space);
+                    encode_success(
+                        windows
+                            .into_iter()
+                            .map(rift_protocol::WindowData::from)
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                Err(error) => error,
+            }
         }
 
         RiftRequest::GetWindowInfo { window_id } => {
@@ -283,6 +295,30 @@ fn encode_reactor_response(reactor: &mut reactor::Reactor, request: RiftRequest)
             }
         },
         _ => encode_error(serde_json::json!({ "message": "Unsupported request" })),
+    }
+}
+
+/// Pick the space a query should answer for.
+///
+/// An explicit `space_id` wins, then a display selector, then the reactor's own
+/// default. A selector that matches no display is an error rather than a silent
+/// fall back to the active display, which would return the wrong windows.
+fn resolve_query_space(
+    reactor: &reactor::Reactor,
+    space_id: Option<u64>,
+    display: Option<&rift_protocol::DisplaySelector>,
+) -> Result<Option<crate::sys::screen::SpaceId>, Vec<u8>> {
+    if let Some(space_id) = space_id {
+        return Ok(Some(crate::sys::screen::SpaceId::new(space_id)));
+    }
+    let Some(selector) = display else {
+        return Ok(None);
+    };
+    match reactor.resolve_display_space(selector) {
+        Some(space) => Ok(Some(space)),
+        None => Err(encode_error(serde_json::json!({
+            "message": format!("No display matches selector {selector:?}"),
+        }))),
     }
 }
 
