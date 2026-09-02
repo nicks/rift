@@ -1446,3 +1446,135 @@ fn display_origin_change_is_treated_as_topology_change() {
         other => panic!("unexpected wm event: {other:?}"),
     }
 }
+
+#[test]
+fn display_churn_stabilization_defers_while_sleeping() {
+    let (mut actor, mut wm_rx, mut reactor_rx) = build_actor();
+    let left = SpaceId::new(601);
+    let right = SpaceId::new(602);
+
+    actor.handle_event(Event::SystemWillSleep);
+    assert!(matches!(
+        recv_reactor(&mut reactor_rx),
+        reactor::Event::SystemWillSleep
+    ));
+
+    actor.handle_event(Event::DisplayChurnBegin);
+    assert!(matches!(
+        recv_reactor(&mut reactor_rx),
+        reactor::Event::DisplayChurnBegin
+    ));
+
+    let epoch = actor.state.display_churn_epoch;
+    // A snapshot that would stabilize and commit if the machine were awake.
+    actor.state.screens = vec![
+        make_screen_with(1, "display-left", 0.0, 1000.0, Some(left)),
+        make_screen_with(2, "display-right", 1000.0, 1000.0, Some(right)),
+    ];
+
+    actor.attempt_finish_display_churn(epoch, 0);
+    actor.attempt_finish_display_churn(epoch, 1);
+    assert_no_wm_event(&mut wm_rx);
+
+    // The epoch is held open rather than retired, so the reactor's churn
+    // quarantine stays up for the rest of the sleep.
+    assert!(actor.state.display_churn_active);
+    assert_eq!(actor.state.display_churn_epoch, epoch);
+    assert!(actor.state.display_topology_state.is_none());
+
+    actor.handle_event(Event::SystemDidWake);
+    assert!(matches!(
+        recv_reactor(&mut reactor_rx),
+        reactor::Event::SystemWoke
+    ));
+
+    actor.attempt_finish_display_churn(epoch, 0);
+    actor.attempt_finish_display_churn(epoch, 1);
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(
+                state.screens.iter().map(|screen| screen.space).collect::<Vec<_>>(),
+                vec![Some(left), Some(right)]
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+    assert!(!actor.state.display_churn_active);
+}
+
+#[test]
+fn display_churn_stabilization_defers_while_session_inactive() {
+    let (mut actor, mut wm_rx, mut reactor_rx) = build_actor();
+    let left = SpaceId::new(601);
+    let right = SpaceId::new(602);
+
+    actor.handle_event(Event::SessionDidResignActive);
+    assert!(matches!(
+        recv_reactor(&mut reactor_rx),
+        reactor::Event::SessionDidResignActive
+    ));
+
+    actor.handle_event(Event::DisplayChurnBegin);
+    assert!(matches!(
+        recv_reactor(&mut reactor_rx),
+        reactor::Event::DisplayChurnBegin
+    ));
+
+    let epoch = actor.state.display_churn_epoch;
+    actor.state.screens = vec![
+        make_screen_with(1, "display-left", 0.0, 1000.0, Some(left)),
+        make_screen_with(2, "display-right", 1000.0, 1000.0, Some(right)),
+    ];
+
+    actor.attempt_finish_display_churn(epoch, 0);
+    actor.attempt_finish_display_churn(epoch, 1);
+    assert_no_wm_event(&mut wm_rx);
+    assert!(actor.state.display_churn_active);
+
+    actor.handle_event(Event::SessionDidBecomeActive);
+    assert!(matches!(
+        recv_reactor(&mut reactor_rx),
+        reactor::Event::SessionDidBecomeActive
+    ));
+
+    actor.attempt_finish_display_churn(epoch, 0);
+    actor.attempt_finish_display_churn(epoch, 1);
+
+    match recv_wm(&mut wm_rx) {
+        wm_controller::WmEvent::SpaceStateUpdated(state, _) => {
+            assert_eq!(
+                state.screens.iter().map(|screen| screen.space).collect::<Vec<_>>(),
+                vec![Some(left), Some(right)]
+            );
+        }
+        other => panic!("unexpected wm event: {other:?}"),
+    }
+}
+
+#[test]
+fn display_churn_stabilization_exhaustion_does_not_commit_while_sleeping() {
+    let (mut actor, mut wm_rx, mut reactor_rx) = build_actor();
+
+    actor.handle_event(Event::SystemWillSleep);
+    let _ = recv_reactor(&mut reactor_rx);
+    actor.handle_event(Event::DisplayChurnBegin);
+    let _ = recv_reactor(&mut reactor_rx);
+
+    let epoch = actor.state.display_churn_epoch;
+    actor.state.screens = vec![make_screen_with(
+        1,
+        "display-left",
+        0.0,
+        1000.0,
+        Some(SpaceId::new(601)),
+    )];
+
+    // Draining the whole retry budget must not retire the epoch or commit.
+    for attempt in 0..=DISPLAY_STABILIZE_MAX_ATTEMPTS {
+        actor.attempt_finish_display_churn(epoch, attempt);
+    }
+    assert_no_wm_event(&mut wm_rx);
+    assert!(actor.state.display_churn_active);
+    assert_eq!(actor.state.display_churn_epoch, epoch);
+}
