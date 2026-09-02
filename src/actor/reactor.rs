@@ -4812,6 +4812,14 @@ impl Reactor {
         }
     }
 
+    /// Resolve a display selector to the space currently shown on that display.
+    ///
+    /// Returns `None` when the selector names no known display, so callers can
+    /// report a bad selector instead of silently answering for another display.
+    pub fn resolve_display_space(&self, selector: &DisplaySelector) -> Option<SpaceId> {
+        self.screen_for_selector(selector, None).and_then(|screen| screen.space)
+    }
+
     fn screens_in_physical_order(&self) -> Vec<&ScreenInfo> {
         let mut screens: Vec<&ScreenInfo> = self.space_state.screens.iter().collect();
         screens.sort_by(|a, b| {

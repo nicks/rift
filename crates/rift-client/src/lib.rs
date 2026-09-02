@@ -109,12 +109,36 @@ impl RiftMachClient {
 
     /// Lists virtual workspaces, optionally for a specific macOS space.
     pub fn get_workspaces(&self, space_id: Option<u64>) -> Result<Vec<WorkspaceData>, ClientError> {
-        self.request(RiftRequest::GetWorkspaces { space_id })
+        self.request(RiftRequest::GetWorkspaces { space_id, display: None })
     }
 
-    /// Lists managed windows, optionally filtered by a macOS space.
+    /// Lists virtual workspaces for the space shown on the selected display.
+    pub fn get_workspaces_on_display(
+        &self,
+        display: DisplaySelector,
+    ) -> Result<Vec<WorkspaceData>, ClientError> {
+        self.request(RiftRequest::GetWorkspaces {
+            space_id: None,
+            display: Some(display),
+        })
+    }
+
+    /// Lists the active workspace's windows, optionally for a specific macOS space.
+    ///
+    /// Tiled windows come back in layout order; see [`WindowData::layout_position`].
     pub fn get_windows(&self, space_id: Option<u64>) -> Result<Vec<WindowData>, ClientError> {
-        self.request(RiftRequest::GetWindows { space_id })
+        self.request(RiftRequest::GetWindows { space_id, display: None })
+    }
+
+    /// Lists the active workspace's windows on the selected display, in layout order.
+    pub fn get_windows_on_display(
+        &self,
+        display: DisplaySelector,
+    ) -> Result<Vec<WindowData>, ClientError> {
+        self.request(RiftRequest::GetWindows {
+            space_id: None,
+            display: Some(display),
+        })
     }
 
     /// Lists connected displays.
@@ -569,7 +593,10 @@ mod tests {
 
     #[test]
     fn request_uses_the_existing_wire_format() {
-        let request = RiftRequest::GetWindows { space_id: Some(7) };
+        let request = RiftRequest::GetWindows {
+            space_id: Some(7),
+            display: None,
+        };
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             serde_json::json!({ "get_windows": { "space_id": 7 } })

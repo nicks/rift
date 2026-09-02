@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{EventKind, RiftCommand, WindowId};
+use crate::{DisplaySelector, EventKind, RiftCommand, WindowId};
 
 /// A request accepted by Rift's Mach IPC server.
 #[non_exhaustive]
@@ -10,10 +10,20 @@ use crate::{EventKind, RiftCommand, WindowId};
 pub enum RiftRequest {
     GetWorkspaces {
         space_id: Option<u64>,
+        /// Scopes the query to the space shown on the selected display.
+        ///
+        /// Ignored when `space_id` is set, which already names a space.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<DisplaySelector>,
     },
     GetDisplays,
     GetWindows {
         space_id: Option<u64>,
+        /// Scopes the query to the space shown on the selected display.
+        ///
+        /// Ignored when `space_id` is set, which already names a space.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display: Option<DisplaySelector>,
     },
     GetWindowInfo {
         window_id: WindowId,
@@ -108,6 +118,43 @@ mod tests {
                 space_id: None,
                 workspace_id: None,
             }
+        );
+    }
+
+    #[test]
+    fn window_queries_keep_their_wire_shape_without_a_display_selector() {
+        let request = RiftRequest::GetWindows {
+            space_id: Some(7),
+            display: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({ "get_windows": { "space_id": 7 } })
+        );
+        assert_eq!(
+            serde_json::from_value::<RiftRequest>(
+                serde_json::json!({ "get_windows": { "space_id": 7 } })
+            )
+            .unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn window_queries_carry_a_display_selector() {
+        let request = RiftRequest::GetWindows {
+            space_id: None,
+            display: Some(crate::DisplaySelector::Uuid("display-uuid".to_string())),
+        };
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({
+                "get_windows": { "space_id": null, "display": "display-uuid" }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RiftRequest>(serde_json::to_value(&request).unwrap()).unwrap(),
+            request
         );
     }
 
